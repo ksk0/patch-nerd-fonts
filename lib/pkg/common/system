@@ -1,0 +1,278 @@
+#!/usr/bin/zsh
+
+SYSTEM_STATE_FILE=$SCRIPT_DIR/.state
+
+save_new_system_state(){
+	[[ -f $SYSTEM_STATE_FILE ]] || touch $SYSTEM_STATE_FILE
+
+	local -U new_state=($(cat $SYSTEM_STATE_FILE; echo $@))
+
+	echo ${(o)new_state} > $SYSTEM_STATE_FILE
+}
+
+#############################################
+# system packages functions
+#
+system_package(){
+	local cmd=$1; shift
+	local pkg=$1; shift
+	local func=${pkg//-/_}_$cmd
+
+	###########################################
+	# some packages have separate install
+	# function.
+	#
+	if typeset -f $func >/dev/null; then
+		$func $pkg "$@"
+		return
+	fi
+
+	case $cmd in
+		check)     system_package_check     $pkg "$@";;
+		action)    system_package_action    $pkg "$@";;
+		provides)  system_package_provides  $pkg "$@";;
+		version)   system_package_version   $pkg "$@";;
+		doinstall) system_package_doinstall $pkg "$@"; return $?;;
+		install)   system_package_install   $pkg "$@"; return $?;;
+		uninstall) system_package_uninstall $pkg "$@"; return $?;;
+	esac
+}
+
+system_package_check(){
+	local pkg=$1
+
+	local version=$(system_package version $pkg installed)
+
+	# echo -n " V:$version "
+
+	[[ -z $version ]] && return 1
+
+	return 0
+}
+
+system_package_install(){
+	local pkg=$1
+	local todo
+
+	system_package action $pkg todo
+	# echo "TODO:$todo $pkg"
+
+	if [[ $todo = keep ]] then
+		count_action success system $pkg kept
+		return 0
+	elif [[ $todo = missing ]] then
+		count_action fail system $pkg missing
+		return 1
+	elif [[ ${todo%%:*} = old ]] then
+		local parts=${(s.:.)todo}
+		count_action fail system $pkg "$parts[2] $parts[3]"
+		return 1
+	fi
+
+	pkg=${todo#*:}
+
+	alert_msg "Installing [$OS]" "${pkg}"
+
+	echo
+
+	local pre_snapshot=($(system_package_snapshot))
+
+	system_package doinstall $pkg
+	local result=$?
+	count_action $result system $pkg install
+
+	local post_snapshot=($(system_package_snapshot))
+	local added_packages=(${post_snapshot:|pre_snapshot})
+
+	save_new_system_state $added_packages
+
+	return $result
+}
+
+system_package_action(){
+		local __package=${1%/*}
+		local __version=${${${(M)1:#*/*}##*/}:-0.0}
+		local __store=$2
+		local __action
+
+		if [[ -n $PROVIDES_PATTERN[$__package] ]]; then
+			system_package_action_multy  __action $1
+		else
+			system_package_action_single __action $1
+		fi
+
+		eval "$__store=$__action"
+}
+
+system_package_action_single(){
+	local action
+	local store=$1; shift
+	local package=${1%/*}
+	local version=${${${(M)1:#*/*}##*/}:-0.0}
+
+	alert_msg "Checking [$OS]" "${package}"
+	echo
+
+	local inst_version=$(system_package version $package installed)
+	local repo_version=$(system_package version $package repo)
+	local inst_version_n=$(normalize_version $inst_version)
+	local repo_version_n=$(normalize_version $repo_version)
+	local need_version=${(j:.:)${(@s:.:)version}[1,2]}
+
+	echo "Installed: $inst_version"
+	echo "Repo:      $repo_version"
+	echo "Short:     $repo_version_n"
+	echo "Need:      $need_version"
+
+	if [[ -z inst_version ]]; then
+		if [[ -z $repo_version ]]; then
+			action=missing
+		elif ! is_newer $repo_version_n $need_version; then
+			action=old:$repo_version_n:$need_version
+		else
+			action=install:$package
+		fi
+
+	else
+		if [[ -z $repo_version ]]; then
+			action=keep
+		elif [[ $inst_version = $repo_version ]]; then
+			action=keep
+		elif ! is_newer $repo_version_n $inst_version_n; then
+			action=keep
+		else
+			action=install:$package
+		fi
+
+	fi
+
+	eval "$store=$action"
+
+	clear_screen 9
+}
+
+system_package_action_multy(){
+	local action
+	local store=$1; shift
+	local package=${1%/*}
+	local version=${${${(M)1:#*/*}##*/}:-0.00}
+	local need_version=${(j:.:)${(@s:.:)version}[1,2]}
+	local repo_packages=()
+	local inst_packages=()
+	local -A valid_packages
+	local -A invalid_packages
+	local -A valid_installed
+	local -A invalid_installed
+	local pkg pkg_name pkg_version nrm_version
+
+	alert_msg "Checking [$OS]" "$package"
+
+	system_package $package provides repo_packages
+
+	# echo REPO PACKAGES: ${(qq)repo_packages}
+
+	# check for already installed packages, their versions
+	# and if they fulfill minimal version criteria
+	#
+	for pkg in $repo_packages; do
+		pkg_name=${pkg%%;*}
+		pkg_version=$(system_package $pkg_name version installed)
+		nrm_version=$(normalize_version $pkg_version)
+
+		# echo PN:$pkg_name
+		# echo IV:$pkg_version
+		# echo NV:$nrm_version
+
+		if [[ -n $pkg_version ]]; then
+			inst_packages+=("$pkg_name;$pkg_version;$nrm_version")
+
+			if [[ $need_version -gt 0 ]]; then
+				# if [[ $nrm_version -ge $need_version ]]; then
+				if is_newer $nrm_version $need_version; then
+					valid_installed[$pkg_name]=1
+				else
+					invalid_installed[$pkg_name]=1
+				fi
+
+			else
+				valid_installed[$pkg_name]=1
+			fi
+		fi
+	done
+
+	# echo "need: $need_version"
+	#
+	# echo INV: ${(k)invalid_installed}
+	# echo VAL: ${(k)valid_installed}
+	# echo "-------------------"
+
+	if [[ -n $inst_packages ]]; then
+		echo
+		echo "${y}Installed packages:${n}"
+		echo "${n}${(l:80::-:)void}"
+
+		for pkg in $inst_packages; do
+			pkg_name=${pkg%%;*}
+			nrm_version=${pkg##*;}
+
+			if [[ -n $invalid_installed[$pkg_name] ]]; then
+				## validity="${y}(required min is ${need_version})${n}"
+				validity="${n}!! ${y}(< ${need_version})${n}"
+			else
+				validity="${n}OK"
+			fi
+
+			printf "%s%-20s %s%6s      %s\n" ${b} ${pkg_name} ${c} ${nrm_version} $validity
+		done
+	fi
+
+	# for each repo package check if it is valid version
+	#
+	for pkg in $repo_packages; do
+		pkg_name=${pkg%%;*}
+		nrm_version=${pkg##*;}
+
+		if [[ $need_version -gt 0 ]]; then
+			if is_newer $nrm_version $need_version; then
+				valid_packages[$pkg_name]=1
+			else
+				invalid_packages[$pkg_name]=1
+			fi
+
+		else
+			valid_packages[$pkg_name]=1
+		fi
+	done
+
+	# echo INV: ${(k)invalid_packages}
+	# echo VAL: ${(k)valid_packages}
+	# echo "-------------------"
+
+	local validity parts void
+
+	# echo INST: ${(qq)inst_packages}
+
+	if [[ -n $repo_packages ]]; then
+		echo
+		echo "${y}Available packages:${n}"
+		echo "${n}${(l:80::-:)void}"
+
+		for pkg in $repo_packages; do
+			pkg_name=${pkg%%;*}
+			nrm_version=${pkg##*;}
+
+			if [[ -n $invalid_packages[$pkg_name] ]]; then
+				validity="${n}!! ${y}(< ${need_version})${n}"
+			else
+				validity="${n}OK"
+			fi
+
+			printf "%s%-20s %s%6s      %s\n" ${b} ${pkg_name} ${c} ${nrm_version} $validity
+			echo -n ${n}
+		done
+	fi
+
+	# check for
+	# check if installed version are valid
+	echo
+}

@@ -1,0 +1,41 @@
+#!/usr/bin/zsh
+
+font_patcher_version(){
+	local pkg=$1
+	local vtype=$2
+
+	case $vtype in
+		installed)
+			if [[ -f $WORKER_DIR/font-patcher ]]; then
+				echo "1.0"
+			fi
+			;;
+		repo)
+			echo "1.0"
+			;;
+	esac
+}
+
+font_patcher_doinstall(){
+	local patcher_url='https://github.com/ryanoasis/nerd-fonts/releases/latest/download/FontPatcher.zip'
+	local test_url="https://github.com/ryanoasis/nerd-fonts/raw/master/bin/scripts/test-fonts.sh"
+
+	[[ -d $WORKER_DIR ]] && rm -rf $WORKER_DIR
+	[[ -d $WORKER_DIR ]] || mkdir $WORKER_DIR
+
+	(
+		cd $WORKER_DIR
+		curl -Lo font_patcher.zip $patcher_url
+		echo
+		unzip font_patcher.zip
+		rm font_patcher.zip
+		curl -Lo test_fonts $test_url
+		chmod 755 test_fonts
+	)
+}
+
+font_patcher_uninstall(){
+	[[ -d $WORKER_DIR ]] && rm -rf $WORKER_DIR
+
+	return 0
+}

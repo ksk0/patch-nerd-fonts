@@ -1,0 +1,13 @@
+# ignore everything
+#
+*
+
+# except directories
+#
+!*/
+!lib/**
+
+# and this files
+#
+!.gitignore
+!patch-fonts

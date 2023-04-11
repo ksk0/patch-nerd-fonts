@@ -1,0 +1,928 @@
+#!/usr/bin/zsh
+
+SCRIPT_DIR=${0:a:h}
+WORKER_DIR=$SCRIPT_DIR/worker
+
+FFORGE=$WORKER_DIR/FontForge.AppImage
+FPATCH=$WORKER_DIR/font-patcher
+
+source $SCRIPT_DIR/lib/core
+
+
+###############################################################################
+# exec functions
+#
+exec_help(){
+	init_colors
+
+	cat <<-EOF
+
+		   ${y}usage:${n}
+		      patch-fonts COMMAND
+
+		   ${y}commands:${n}
+		      patch      - patch a font
+		      install    - install already patched font
+		      restore    - restore previously backed up fonts
+
+		      setup      - install neccesary programs/modules (pkg, python ...)
+		      check      - check if all neccesary programs/modules are installed
+		      clear      - remove packages which were installed by this script
+
+		   ${y}note:${n}
+		      command names can be abbrevated: inst, pa, ...
+
+	EOF
+
+	exit
+}
+
+exec_setup(){
+	install_packages
+}
+
+exec_check(){
+	check_packages YES
+}
+
+exec_clear(){
+	clear_packages
+}
+
+exec_patch(){
+	check_packages || return
+	patch_fonts || return
+
+	echo
+	yesno_question "Do you want to install patched fonts [Y/n]:" Y || return
+
+	SELECTED_FONTS=("${(@)PATCHED_FONTS}")
+	FONT_FAMILY="${FONT_FAMILY} Nerd"
+
+	install_fonts
+}
+
+exec_install(){
+	check_packages || return
+	select_fonts patched || return
+	install_fonts
+}
+
+exec_restore(){
+	check_packages || return
+	select_fonts stored || return
+	restore_fonts
+}
+
+
+###############################################################################
+# install/check/clear packages
+#
+install_packages(){
+	set_offset 0
+	update_system
+	load_package_list
+
+	local group
+	local GROUPS=(system ${${(k)REQUIRED_PACKAGES}:#system})
+
+	for group in $GROUPS; do
+		zpackage $group install ${=REQUIRED_PACKAGES[$group]}
+	done
+
+	set_offset 3
+}
+
+check_packages(){
+	local show_msg=$1
+
+	load_package_list
+
+	setup_python_venv
+	local isok=$?
+
+	if [[ $isok -eq 0 ]]; then
+		local pkg
+		local group
+		local GROUPS=(${(k)REQUIRED_PACKAGES})
+
+		for group in $GROUPS; do
+			for pkg in ${(s: :)REQUIRED_PACKAGES[$group]}; do
+				alert_msg "Checking [$group]" "${pkg}"
+				
+				if ! zpackage $group check $pkg; then
+					isok=1
+					break
+				fi
+
+				clear_screen 4
+			done
+
+			[[ $isok -eq 1 ]] && break
+		done
+	fi
+
+	echo
+	echo
+
+	if [[ $show_msg = "YES" ]] && [[ $isok -eq 0 ]]; then
+		alert_box --expand "All necesary packages are installed!"
+	elif [[ $isok -eq 1 ]]; then
+		alert_box --expand \
+			"Some packages are missing!" \
+			"" \
+			"Run: ${w}./patch-fonts setup${y} to fix the problem"
+	fi
+
+	return $isok
+}
+
+clear_packages(){
+	local tasks=()
+	local menu_tasks=()
+
+
+	# check if any system packages to uninstall
+	#
+	local state_file=$SCRIPT_DIR/.state
+	local script_pkgs=($([[ -f $state_file ]] && cat $state_file))
+	local installed_pkgs=($(system_package_snapshot))
+	local extra_pkgs=(${installed_pkgs:*script_pkgs})
+
+	if [[ -n $extra_pkgs ]]; then
+		tasks+=("system")
+		menu_tasks+=("Uninstall system packages")
+	elif [[ -f $state_file ]]; then
+		rm $state_file
+	fi
+
+	# check if any python packages to uninstall
+	#
+	local python_dir=$__NERD_FONTS_SHARE/python
+
+	if [[ -d $python_dir ]]; then
+		tasks+=("python")
+		menu_tasks+=("Uninstall python packages")
+	fi
+
+	# check if FontForge is installed
+	# 
+	if [[ -f $FFORGE ]]; then
+		tasks+=("font_forge")
+		menu_tasks+=("Uninstall FontForge")
+	fi
+
+
+	# check if font-pacher is installed
+	#
+	if [[ -f $FPATCH ]]; then
+		tasks+=("font_patcher")
+		menu_tasks+=("Uninstall FontPatcher")
+	fi
+
+	if [[ -n $tasks ]]; then
+		tasks+=("")
+		menu_tasks+=("")
+	fi
+
+	# check for presence of patched fonts
+	#
+	local patched_fonts=("${(@f)$(
+		find $SCRIPT_DIR |
+		sed -e "s;$SCRIPT_DIR/;;" |
+		grep -E  '*\.(otf|ttf)$'   |
+		grep -Ev '^worker/' |
+		grep -Ev '^.fonts/' |
+		grep -Ev '^.backup/' |
+		grep -E '/patched/[^/]+$'
+	)}")
+
+	if [[ -n $patched_fonts ]]; then
+		tasks+=("patched")
+		menu_tasks+=("Delete patched fonts")
+	fi
+
+
+	# check for presence of patched fonts
+	#
+	local stored_fonts=("${(@f)$(
+		find $SCRIPT_DIR |
+		sed -e "s;$SCRIPT_DIR/;;" |
+		grep -E  '*\.(otf|ttf)$'   |
+		grep -E  '^.backup/' 
+	)}")
+	
+	if [[ -n $stored_fonts ]]; then
+		tasks+=("stored")
+		menu_tasks+=("Delete backed up fonts")
+	fi
+
+	if [[ -n $tasks ]] && [[ $tasks[$#tasks] = "" ]]; then
+		menu_tasks[$#tasks]=()
+		tasks[$#tasks]=()
+	fi
+
+	if [[ -z $tasks ]]; then
+		alert_box --expand "There is nothins to uninstall/delete!" "" "${w}Exiting ..."
+
+		return 1
+	fi
+
+
+	local selection
+	local menu_prompt=""
+
+	menu_prompt+="[${g}SPACE: ${n}select] "
+	menu_prompt+="[${g}CTRL+A: ${n}all] "
+	menu_prompt+="[${g}CTRL+N: ${n}none] "
+	menu_prompt+="[${y}CTRL+O: ${n}end] "
+	menu_prompt+="[${y}CTRL+C: ${n}quit]"
+
+	zmenu select selection\
+		--multy \
+		--width 60 \
+		--header "Clear tasks to do" \
+		--selected-color "w" \
+		--focus 1 \
+		--color 'g b' \
+		--align "r l" \
+		--spaces "1 1" \
+		--no-bottom-line \
+		--prompt "$menu_prompt" \
+		"${(@)menu_tasks}"
+
+	[[ -z $selection ]] && return 1
+
+	################################################3
+	# run uninstall script for each task
+	#
+	local task
+
+	set_offset 0
+
+	for task in $selection; do
+		clear_packages_$tasks[$task]
+	done
+
+	set_offset 3
+}
+
+clear_packages_system(){
+	alert_msg "Uninstalling" "system packages"
+	echo
+
+	zpackage system uninstall $extra_pkgs
+}
+
+clear_packages_python(){
+	alert_msg "Uninstalling" "python packages"
+	echo
+
+	rm -rf $__NERD_FONTS_SHARE
+
+	echo "   ${g}DONE${n}"
+}
+
+clear_packages_font_forge(){
+	alert_msg "Uninstalling" "FontForge"
+	echo
+
+	zpackage system uninstall font-forge
+
+	echo "   ${g}DONE${n}"
+}
+
+clear_packages_font_patcher(){
+	alert_msg "Uninstalling" "FontPatcher"
+	echo
+
+	zpackage system uninstall font-patcher
+
+	echo "   ${g}DONE${n}"
+}
+
+clear_packages_patched(){
+	alert_msg "Deleting" "patched fonts"
+	echo
+
+	local dir
+	for dir in ${(u)patched_fonts%/patched/*}; do
+		rm -rf $dir/patched
+	done
+
+	echo "   ${g}DONE${n}"
+}
+
+clear_packages_stored(){
+	alert_msg "Deleting" "backed up fonts"
+	echo
+
+	rm -r .backup
+
+	echo "   ${g}DONE${n}"
+}
+
+
+###############################################################################
+# patch fonts
+#
+patch_fonts(){
+	select_fonts  raw || return 1
+	select_glyphs     || return 1
+	echo
+
+	local options=(
+		--quiet
+		--careful
+		$SELECTED_GLYPHS
+	)
+
+	PATCHED_FONTS=("${(@f)$(
+		for org_font in $SELECTED_FONTS; do
+
+			patch_single_font "$SCRIPT_DIR/$org_font" &
+
+			zprogress wait $! "${y}Patching: ${b}${org_font##*/}${n}"
+		done
+	)}")
+
+	echo
+	show_patched_fonts
+	echo
+}
+
+patch_single_font(){
+	local org_font=$1
+	local patched=${org_font%/*}/patched
+	local tmp_dir=$(mktemp -d)
+
+	[[ -d $patched ]] || mkdir $patched
+
+	$FFORGE >/dev/null 2>&1 \
+		-script $FPATCH \
+		$options  \
+		-out $tmp_dir \
+		$org_font
+
+	cd $tmp_dir
+
+	local patched_font=${tmp_dir}/$(ls -1)
+
+	cat <<-EOF | $FFORGE -script -  2>/dev/null
+		new_file="${patched_font}"
+		org_file="${org_font}"
+
+		new_font = fontforge.open(new_file)
+		org_font = fontforge.open(org_file)
+
+		family = org_font.familyname
+		weight = org_font.weight
+		slant  = org_font.italicangle
+
+		style = weight
+
+		if slant != 0.0:
+		  style = style + "Italic"
+
+		new_family = family + " Nerd"
+		new_name   = new_family.replace(" ", "") + "-" + style
+		full_name  = new_family + " - " + style
+
+		new_font.familyname = new_family
+		new_font.fontname   = new_name
+		new_font.fullname   = full_name
+
+		dest_file = "${patched}/" + new_name + ".${patched_font##*.}"
+		rel_file  = dest_file.replace("${SCRIPT_DIR}/", "")
+
+		print(rel_file)
+
+		new_font.generate(dest_file)
+	EOF
+
+	rm "$patched_font"
+	rmdir $tmp_dir
+}
+
+show_patched_fonts(){
+	alert_msg "${y}Following fonts were created:"
+
+	local selection
+	local menu_prompt=""
+
+	local items=("${(@f)$(
+		for font in $PATCHED_FONTS; do
+			echo "${font%/*};${font##*/}"
+		done
+	)}")
+
+	zmenu print \
+		--width 60 \
+		--header "Directory;Font file" \
+		--focus 0 \
+		--color 'g y b' \
+		--align "r l " \
+		--spaces "1 1" \
+		--no-bottom-line \
+		--prompt "$menu_prompt" \
+		$items
+
+	return
+
+	echo FF: $FONT_FAMILY
+
+	org_font=$SCRIPT_DIR/$PATCHED_FONTS[1]
+
+	cat <<-EOF | $FFORGE -script - 2>/dev/null
+		org_file="${org_font}"
+		org_font = fontforge.open(org_file)
+
+		print("FF: {}".format(org_font.familyname))
+	EOF
+}
+
+
+###############################################################################
+# install/backup/restore fonts
+#
+install_fonts(){
+	check_existing_fonts || return 1
+
+	local font_type=${SELECTED_FONTS[1]##*.}
+	local font_dir=$(
+		fc-list "" file|
+		grep "\.${font_type}:"|
+		sed -E -e 's:fonts/([^/]+)/.*:fonts/\1:' |
+		sort | uniq | head -1
+	)
+
+	if [[ -z $font_dir ]]; then
+		if [[ $font_type = "otf" ]]; then
+			font_dir='/usr/share/fonts/opentype'
+		elif [[ $font_type = "ttf" ]]; then
+			font_dir='/usr/share/fonts/truetype'
+		else
+			alert_box --expand \
+				"Don't know where to place the font with extension: ${w}\"${font_type}\"${y}!" \
+				"Please install them manually!"
+
+			return 1
+		fi
+	fi
+
+	font_dir="${font_dir}/nerd-fonts"
+
+	(
+		[[ -d $font_dir ]] || sudo mkdir -p $font_dir
+
+		sudo cp $SELECTED_FONTS $font_dir/
+				
+		sudo fc-cache -f
+	) &
+
+	zprogress wait $! "Installing fonts"
+
+	{
+	echo
+		echo "${y}Following fonts have been installed:${n}"
+		echo ${SELECTED_FONTS/#/\\n${w}   }
+		echo
+		echo "${y}Into directory:${n}"
+		echo ""
+		echo "   ${w}$font_dir"
+		echo ""
+	} | sed -e 's/^/   /'
+
+	return 0
+}
+
+restore_fonts(){
+	echo
+	sudo -v
+	echo
+
+	local font_family=${${FONT_FAMILY#/}%%/*}
+
+	local existing=("${(@f)$(
+		(
+			sudo fc-cache -f
+			fc-list :family="$font_family" file |
+			sed -e 's/: *$//' |
+			sort
+
+		) &
+
+
+		zprogress wait $! "Collecting existing fonts"
+	)}")
+
+	if [[ -n $existing ]]; then
+		zprogress message "Deleting existing fonts"
+		sudo rm $existing
+		zprogress end "${g}DONE${n}"
+	fi
+	
+	(
+		local file  
+
+		local sources=("${(@f)$(
+			cat .backup/$FONT_FAMILY/fonts
+		)}")
+
+		for file in $SELECTED_FONTS; do
+			local font=${file##*/}
+			local dest=${(M)sources:#*/$font}
+
+			sudo cp $file $dest
+		done
+	) &
+
+	zprogress wait $! "Restoring fonts"
+}
+
+backup_fonts(){
+	local fonts=("$@")
+	local backup_root=$SCRIPT_DIR/.backup/$FONT_FAMILY
+
+	local version=$(date +"%Y-%m-%d %H:%M")
+	local backup_dir="$backup_root/${version}"
+
+	[[ -d $backup_dir ]] || mkdir -p $backup_dir
+
+	echo ${(j:\n:)fonts} > $backup_dir/fonts
+
+	cp $fonts $backup_dir
+}
+
+
+###############################################################################
+# find fonts
+#
+find_fonts(){
+	setup_python_venv
+
+	local arg=$1
+
+	alert_msg "${y}Searching for fonts!"
+	echo
+
+	typeset -gA LOCAL_FONTS=("${(@f)$(
+		(
+			find $SCRIPT_DIR |
+			sed -e "s;$SCRIPT_DIR/;;" |
+			grep -E  '*\.(otf|ttf)$'   |
+			grep -Ev '^worker/' |
+			grep -Ev '^.fonts/' |
+			grep -Ev '^.backup-x/' |
+
+			if [[ $arg = "patched" ]]; then
+				grep -Ev '^.backup/' |
+				grep -E '/patched/[^/]+$'
+			elif [[ $arg = "stored" ]]; then
+				grep -Ev '/patched/[^/]+$' |
+				grep -E  '^.backup/' 
+			elif [[ $arg = "raw" ]]; then
+				grep -Ev '^.backup/' |
+				grep -Ev '/patched/[^/]+$'
+			fi |
+
+			sort |
+
+			while read file; do
+				  cat <<-EOF
+						print("${file}")
+						font = fontforge.open("$SCRIPT_DIR/${file}")
+						print(font.familyname)
+					EOF
+
+			done | $FFORGE -script -  2>/dev/null
+			echo VOID
+			echo VOID
+			) &
+
+			zprogress wait $! "Searching"
+	)}")
+
+	unset "LOCAL_FONTS[VOID]"
+
+	[[ -n $LOCAL_FONTS ]] && return 0
+}
+
+find_fonts_patched(){
+	find_fonts patched && return 0
+
+	cat <<-EOF | alert_box --expand
+		No ${w}patched${y} fonts were found!
+		Patch some fonts and run script again!
+	EOF
+
+	return 1
+
+}
+
+find_fonts_stored(){
+	find_fonts stored && return 0
+
+	alert_box --expand "No ${w}backed up${y} fonts were found!"
+
+	return 1
+}
+
+find_fonts_raw(){
+	find_fonts raw && return 0
+
+	cat <<-EOF | alert_box --expand
+		${n}No fonts were found!
+		${n}Put your fonts under following directory:
+
+		$SCRIPT_DIR/fonts
+
+		${n}and run script again!
+	EOF
+
+return 1
+}
+
+
+###############################################################################
+# font, glyph selection
+#
+select_fonts(){
+	local arg=$1
+
+	find_fonts_$arg || return 1
+
+	local items=("${(@f)$(
+		if [[ $arg = 'stored' ]]; then
+			for font in ${(k)LOCAL_FONTS}; do
+				local family=${LOCAL_FONTS[$font]}
+				local version=${${font%/*}##*/}
+				echo "$family;$version"
+			done | sort | uniq
+		else
+			for family in ${(ou)LOCAL_FONTS}; do
+				echo "${(k)LOCAL_FONTS[(r)${family}]%/*};$family"
+			done
+		fi
+	)}")
+
+
+	##########################################
+	# Show menu
+	#
+	alert_msg "${y}Select font family:"
+
+	local selection
+	local menu_prompt=""
+
+	menu_prompt+="[${g}ENTER: ${n}select] "
+	menu_prompt+="[${y}CTRL+C: ${n}quit]"
+
+	zmenu select selection\
+		--width 60 \
+		--header "Directory;Font family name" \
+		--selected-color "w" \
+		--focus 1 \
+		--color 'g y b' \
+		--align "r l l" \
+		--spaces "1 2 2" \
+		--no-bottom-line \
+		--prompt "$menu_prompt" \
+		$items
+
+	[[ -z $selection ]] && return 1
+
+	if [[ $arg = stored ]]; then
+		FONT_FAMILY="/${items[$selection]//;//}/"
+		SELECTED_FONTS=("${(@k)LOCAL_FONTS[(I)*${FONT_FAMILY}*]}")
+	else
+		FONT_FAMILY=${items[$selection]##*;}
+		SELECTED_FONTS=("${(@k)LOCAL_FONTS[(R)${FONT_FAMILY}]}")
+	fi
+
+	return 0
+}
+
+select_glyphs(){
+	local glyphs=(
+		"--fontawesome           : Font Awesome Glyphs"
+		"--fontawesomeextension  : Font Awesome Extension Glyphs"
+		"--powerline             : Powerline Glyphs"
+		"--powerlineextra        : Powerline Extra Glyphs"
+		"--fontlogos             : Font Logos Glyphs"
+		"--octicons              : Octicons Glyphs"
+		"--codicons              : Codicons Glyphs"
+		"--powersymbols          : IEC Power Symbols"
+		"--pomicons              : Pomicon Glyphs"
+		"--material              : Material Design Icons"
+		"--weather               : Weather Icons"
+	)
+
+
+	##########################################
+	# Show menu
+	#
+	alert_msg "${y}Select glyph groups to patch the font(s) with:"
+
+	local selection
+	local menu_prompt=""
+	local items=("${(@)glyphs#*: }")
+
+	menu_prompt+="[${g}SPACE: ${n}select] "
+	menu_prompt+="[${g}CTRL+A: ${n}all] "
+	menu_prompt+="[${g}CTRL+N: ${n}none] "
+	menu_prompt+="[${y}CTRL+O: ${n}end] "
+	menu_prompt+="[${y}CTRL+C: ${n}quit]"
+
+	zmenu select selection\
+		--multy \
+		--width 60 \
+		--header "Glyph description" \
+		--selected "1 2 3 4 5 6 7 8 9 10 11" \
+		--selected-color "w" \
+		--focus 1 \
+		--color 'g b' \
+		--align "r l" \
+		--spaces "1 1" \
+		--no-bottom-line \
+		--prompt "$menu_prompt" \
+		$items
+
+	[[ -z $selection ]] && return 1
+
+	SELECTED_GLYPHS=()
+
+	for i in $selection; do
+		SELECTED_GLYPHS+=(${glyphs[$i]%%  *})
+	done
+
+	return 0
+}
+
+
+##########################################
+# Copy fonts into system dir and recreate
+# font cache
+#
+check_existing_fonts(){
+	echo
+	sudo -v
+	echo
+
+	local existing=("${(@f)$(
+		(
+			sudo fc-cache -f
+			fc-list :family="$FONT_FAMILY" file |
+			sed -e 's/: *$//' |
+			sort
+
+		) &
+
+
+		zprogress wait $! "Collecting existing fonts"
+	)}")
+
+	[[ -z $existing ]] && return 0
+
+	local md5_sums=("${(@f)$(
+		(
+			for file in $existing; do
+				cat $file | md5sum -b
+			done | sort | md5sum
+
+			for file in $SELECTED_FONTS; do
+				cat $file | md5sum -b
+			done | sort | md5sum
+		) &
+
+		zprogress wait $! "Checking existing fonts"
+	)}")
+
+	if [[ $md5_sums[1] = $md5_sums[2] ]]; then
+		echo
+		echo "   ${y}Given fonts are alreday installed:${n}"
+		echo ${w}${existing/#/\\n   }
+		echo
+
+		return 1
+	fi
+
+	check_backuped_fonts $md5_sums[1] || return 0
+
+	# clear_screen 2
+
+	cat <<-EOF | alert_box --expand
+		Fonts of family: ${w}"${FONT_FAMILY}"${y} already exist!
+		To install new fonts we will have to ${w}delete ${y}or ${w}backup ${y}existing.
+	EOF
+
+	##########################################
+	# Show menu
+	#
+	local selection
+
+	zmenu select selection\
+		--no-enumerate \
+		--width 60 \
+		--header "Select action:" \
+		--selected-color "w" \
+		--focus 1 \
+		--color 'w' \
+		--align "l" \
+		--no-bottom-line \
+		"Backup existing fonts" \
+		"Delete existing fonts" \
+		"" \
+		"Quit"
+
+	echo
+
+	[[ -z $selection ]] || [[ $selection -eq 4 ]] && return 1
+
+	clear_screen 16
+
+	if [[ $selection -eq 1 ]]; then
+		local message=$(
+			backup_fonts $existing  &
+			zprogress wait $! "Backing up fonts"
+		)
+
+		[[ -n $message ]] && echo $message
+	fi
+
+	sudo rm $existing
+
+	return 0
+}
+
+check_backuped_fonts(){
+	local md5_existing=$1
+	local backup_root=$SCRIPT_DIR/.backup/$FONT_FAMILY
+
+	[[ -d $backup_root ]] || return 0
+
+	local versions=("${(@f)$(cd $backup_root; ls -1 | sort)}")
+
+	[[ -z $versions ]] && return 0
+
+	local backuped=$(
+		(
+			for version in $versions; do
+				local backup_dir="$backup_root/$version"
+				local files=("${(@f)$(cd $backup_dir; ls -1)}")
+
+				[[ -z $files ]] && continue
+
+				local md5_backuped=$(
+					for file in $files; do
+						local font_file=${backup_dir}/${file}
+
+						[[ -f $font_file ]] || continue
+
+						cat $font_file | md5sum -b
+					done | sort | md5sum
+				)
+
+				if [[ $md5_existing = $md5_backuped ]]; then
+					echo $version
+					break
+				fi
+			done
+		) &
+
+		zprogress wait $! "Checking backed up fonts"
+	)
+
+	[[ -z $backuped ]] && return 0
+
+	echo
+	echo "   ${y}Fonts are already backed up on: ${w}${backuped}"
+	echo
+
+	return 1
+}
+
+
+##########################################
+# Parse arguments
+#
+parse_arguments(){
+	local commands=(setup patch install restore clear check)
+	local cmd=(${(M)commands:#${1}*}) 
+
+	[[ $#cmd -eq 0 ]] && SCRIPT_COMMAND="exec_help"                         
+	[[ $#cmd -eq 1 ]] && SCRIPT_COMMAND="exec_$cmd"                         
+	[[ $#cmd -gt 1 ]] && SCRIPT_COMMAND="exec_help"
+
+	shift 2>/dev/null
+
+	SCRIPT_ARGS=("$@")
+}
+
+
+parse_arguments $@
+
+$SCRIPT_COMMAND "${SCRIPT_ARGS[@]}"
+
+echo
+

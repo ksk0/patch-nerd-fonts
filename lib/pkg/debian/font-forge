@@ -1,0 +1,51 @@
+#!/usr/bin/zsh
+
+[[ ${+NERD_FONTS_PACKAGE_DEBIAN_FFORGE} -eq 1 ]] && return
+
+NERD_FONTS_PACKAGE_DEBIAN_FFORGE=1
+
+font_forge_version(){
+	local pkg=$1
+	local vtype=$2
+
+	case $vtype in
+		installed)
+			if [[ -f $FFORGE ]]; then
+				$FFORGE --version --quiet | awk '/^fontforge/{print $2}'
+			fi
+			;;
+		repo)
+			local url="https://api.github.com/repos/fontforge/fontforge/releases/latest"
+
+			curl -s $url |
+				grep '"tag_name":' |
+				sed -E 's/.*"v*([^"]+)".*/\1/'
+			;;
+	esac
+}
+
+font_forge_doinstall(){
+	local release_url="https://api.github.com/repos/fontforge/fontforge/releases/latest"
+	local download_url="https://github.com/fontforge/fontforge/releases/download"
+	local release=$(font_forge_version font-forge repo)
+
+	local file=$(
+		curl -s $release_url |
+			grep '"name": "FontForge.*AppImage"' |
+			sed -E -e 's/.*"name": "//' -e 's/",//'
+	)
+
+	download_url="${download_url}/${release}/${file}"
+
+	(
+		cd $WORKER_DIR
+		curl -Lso FontForge.AppImage $download_url
+		chmod 755 FontForge.AppImage
+	)
+}
+
+font_forge_uninstall(){
+	[[ -f $FFORGE ]] && rm $FFORGE
+	
+	return 0
+}

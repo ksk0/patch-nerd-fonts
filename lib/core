@@ -1,0 +1,255 @@
+#!/usr/bin/zsh
+
+[[ ${+NERD_FONTS_FUNCTIONS} -eq 1 ]] && return
+
+NERD_FONTS_FUNCTIONS=1
+__NERD_FONTS_OFFSET=3
+__NERD_FONTS_SHARE=$SCRIPT_DIR/.local/
+
+source $SCRIPT_DIR/lib/zfm
+
+
+###############################################################################
+# init functions
+#
+core_init(){
+	init_colors
+	linux_flavour
+
+	############################################
+	# source common and OS package functions
+	#
+	local file
+
+	source $SCRIPT_DIR/lib/pkg/core
+
+	for file in $SCRIPT_DIR/lib/pkg/common/*; do
+		source $file
+	done
+
+	for file in $SCRIPT_DIR/lib/pkg/$OS/*; do
+		source $file
+	done
+
+	zterm init
+	zmenu init
+}
+
+init_colors(){
+	r='[31m'
+	g='[32m'
+	y='[33m'
+	b='[34m'
+	m='[35m'
+	c='[36m'
+	w='[37m'
+	n='[0m'
+
+	if [[ $(tput colors) -lt 256 ]]; then
+		s='[90m'
+	else
+		s='[38;5;243m'
+	fi
+}
+
+linux_flavour(){
+	[[ -n $OS ]] && return 
+
+	if [[ -f /etc/arch-release ]] then
+		OS=arch
+	elif [[ -f /etc/redhat-release ]] then
+		OS=redhat
+		OS=""
+	elif [[ -f /etc/debian_version ]] then
+		OS=debian
+	elif [[ -f /etc/os-release ]] then
+		OS=$(source /etc/os-release; echo ${ID_LIKE% *})
+
+		[[ $OS = suse ]] || OS=""
+		OS=""
+	fi
+
+
+	[[ -n $OS ]] && return 0
+
+	alert_box --expand "${y}Unable to determin Linux flavour!${n}"
+
+	exit 1
+}
+
+
+###############################################################################
+# messaging functions
+#
+clear_screen(){
+	# return
+	local i
+
+	for i in {1..$1}; do
+		echo -n '[A[2K'
+	done
+}
+
+yesno_question(){
+	local prompt=$1
+	local default=${(L)2}
+
+	local yesno
+
+	echo
+	while true; do
+		echo -n '[1A[2K'
+		echo -n "   ${prompt} "
+		read yesno
+
+		if [[ -z $yesno ]] || [[ ${(L)yesno} = y ]] || [[ ${(L)yesno} = n ]] then
+			echo 
+			break
+		fi
+	done
+
+	[[ $default = n ]] && [[ ${(L)yesno} != y ]] && return 1
+	[[ $default = y ]] && [[ ${(L)yesno} != n ]] && return 0
+
+	[[ ${(L)yesno} = y ]] && return 0
+	[[ ${(L)yesno} = n ]] && return 1
+
+	return 1
+}
+
+set_offset(){
+	__NERD_FONTS_OFFSET=$1
+}
+
+alert_msg(){
+	local width=80
+	local offset=$__NERD_FONTS_OFFSET
+	local void
+
+	local ARGS OFFSET
+
+	zparseopts -E -D -A ARGS \
+		-offset:=OFFSET
+
+	[[ -n $OFFSET ]] && offset=${OFFSET[2]}
+
+	local action=$1
+	local object=$2
+	local prefix=${(l:${offset}:: :)void}
+
+	width=$((width - offset))
+
+	[[ -n $object ]] && action="${action}:"
+	
+	echo 
+	echo "${prefix}${g}${(l:$width::#:)void}"
+	echo "${prefix}${g}# ${w}${action}${y} ${object}${n}"
+	echo "${prefix}${g}${(l:$width::#:)void}${n}"
+}
+
+alert_box(){
+	local width=80
+	local void
+	local align=C
+	local expand=0
+	local border="#"
+	local offset=$__NERD_FONTS_OFFSET
+
+	############################################################
+	# parse command options 
+	#   --left       - text aligment
+	#   --right      -    -||-
+	#   --center     -    -||-
+	#
+	#   --expand     - add empty line before, and after text
+	#
+	local ARGS BORDER WIDTH OFFSET
+
+	zparseopts -E -D -A ARGS \
+		-left \
+		-right \
+		-center \
+		-expand \
+		-offset:=OFFSET \
+		-width:=WIDTH \
+		-border:=BORDER
+
+	[[ ${+ARGS[--left]}   -eq 1 ]] && align=L
+	[[ ${+ARGS[--right]}  -eq 1 ]] && align=R
+	[[ ${+ARGS[--center]} -eq 1 ]] && align=C
+	[[ ${+ARGS[--expand]} -eq 1 ]] && expand=1
+
+	[[ -n $BORDER ]] && border=${${BORDER[2]}[1]}
+	[[ -n $WIDTH  ]] && width=${WIDTH[2]}
+	[[ -n $OFFSET ]] && offset=${OFFSET[2]}
+
+	width=$((width - offset))
+
+	local lines=("$@")
+	local bline=${${(l:$width::.:)void}//./${border}}
+	local prefix
+	
+	prefix=${(l:${offset}:: :)prefix}
+
+	[[ -z $lines ]] && lines=("${(@f)$(cat)}")
+
+	echo 
+	echo "${prefix}${g}${bline}${n}"
+
+	[[ $expand -eq 1 ]] && echo "${prefix}${g}${border}${(l:$((width - 2)):: :)void}${border}${n}"
+
+	local text
+	local len
+	local left
+	local right
+	local line
+
+	for line in "${(@)lines}"; do
+		text=$line
+
+		# strip ansi sequence
+		#
+		strip_ansi_escape text
+
+		len=$#text
+
+		case $align in 
+			C)
+				left=$(((width - 2 - len) / 2))
+				right=$((width - 2 - len - left))
+				;;
+			L)
+				left=0
+				right=$((width - 2 - len ))
+				;;
+			R)
+				right=0
+				left=$((width - 2 - len ))
+				;;
+		esac
+
+		echo -n "$prefix"
+		echo -n "${g}${border}${(l:$left:: :)void}${n}"
+		echo -n "${y}${line}${n}"
+		echo -n "${g}${(l:$right:: :)void}${border}${n}"
+		echo
+
+	done
+
+	[[ $expand -eq 1 ]] && echo "${prefix}${g}${border}${(l:$((width - 2)):: :)void}${border}${n}"
+
+	echo "${prefix}${g}${bline}${n}"
+	echo
+}
+
+strip_ansi_escape(){
+	if [[ -o RE_MATCH_PCRE ]]; then
+		eval "regexp-replace $1 '(\x9B|\x1B\[)[0-9:;<>=?]*[ -\/]*[@-~]' ''"
+	else
+		setopt RE_MATCH_PCRE
+		eval "regexp-replace $1 '(\x9B|\x1B\[)[0-9:;<>=?]*[ -\/]*[@-~]' ''"
+		unsetopt RE_MATCH_PCRE
+	fi
+}
+
+core_init

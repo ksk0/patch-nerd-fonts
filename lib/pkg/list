@@ -1,0 +1,10 @@
+[system]
+  curl unzip python
+  libharfbuzz-bin libthai0 libpangocairo-1.0-0
+
+  font-patcher font-forge
+
+[python]
+  argparse
+
+
