@@ -272,6 +272,17 @@ clear_packages_system(){
 	echo
 
 	zpackage system uninstall $extra_pkgs
+
+	local state_file=$SCRIPT_DIR/.state
+	local script_pkgs=($([[ -f $state_file ]] && cat $state_file))
+	local installed_pkgs=($(system_package_snapshot))
+	local extra_pkgs=(${installed_pkgs:*script_pkgs})
+
+	if [[ -n $extra_pkgs ]]; then
+		echo ${(j:\n:)extra_pkgs} ? $state_file
+	elif [[ -f $state_file ]]; then
+		rm $state_file
+	fi
 }
 
 clear_packages_python(){
