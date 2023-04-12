@@ -1,7 +1,7 @@
 #!/usr/bin/zsh
 
 system_package_snapshot(){
-	sudo apt list --installed 2>/dev/null |
+	apt list --installed 2>/dev/null |
 		grep -v 'Listing...' |
 		awk -F'/' '{print $1}'
 }

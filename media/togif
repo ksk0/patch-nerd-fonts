@@ -1,0 +1,27 @@
+#!/usr/bin/zsh
+
+# This script is based on info from following page:
+# 
+# http://blog.pkh.me/p/21-high-quality-gif-with-ffmpeg.html
+#
+
+to_gif(){
+	local palette="/tmp/palette.png"
+	local filters="fps=15"
+
+	ffmpeg -v warning -i $1 -vf "$filters,palettegen" -y $palette
+	ffmpeg -v warning -i $1 -i $palette -lavfi "$filters [x]; [x][1:v] paletteuse" -y $2
+}
+
+# extension of files to be converted is given as first
+# argument. If not given use "mp4"
+#
+local ext=${1:-mp4}
+
+# convert all files with given extension, in current directory
+# to "gif"
+#
+for file in *.$ext; do
+	echo "Converting: $file"
+	to_gif $file ${file%.*}.gif
+done

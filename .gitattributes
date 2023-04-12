@@ -1,0 +1,7 @@
+media/install.gif filter=lfs diff=lfs merge=lfs -text
+media/patch.gif filter=lfs diff=lfs merge=lfs -text
+media/restore.gif filter=lfs diff=lfs merge=lfs -text
+media/setup.gif filter=lfs diff=lfs merge=lfs -text
+media/check-fail.gif filter=lfs diff=lfs merge=lfs -text
+media/check-ok.gif filter=lfs diff=lfs merge=lfs -text
+media/clean.gif filter=lfs diff=lfs merge=lfs -text

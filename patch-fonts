@@ -27,7 +27,7 @@ exec_help(){
 
 		      setup      - install neccesary programs/modules (pkg, python ...)
 		      check      - check if all neccesary programs/modules are installed
-		      clear      - remove packages which were installed by this script
+		      clean      - remove packages which were installed by this script
 
 		   ${y}note:${n}
 		      command names can be abbrevated: inst, pa, ...
@@ -45,8 +45,8 @@ exec_check(){
 	check_packages YES
 }
 
-exec_clear(){
-	clear_packages
+exec_clean(){
+	clean_packages
 }
 
 exec_patch(){
@@ -76,7 +76,7 @@ exec_restore(){
 
 
 ###############################################################################
-# install/check/clear packages
+# install/check/clean packages
 #
 install_packages(){
 	set_offset 0
@@ -137,7 +137,7 @@ check_packages(){
 	return $isok
 }
 
-clear_packages(){
+clean_packages(){
 	local tasks=()
 	local menu_tasks=()
 
@@ -241,7 +241,7 @@ clear_packages(){
 	zmenu select selection\
 		--multy \
 		--width 60 \
-		--header "Clear tasks to do" \
+		--header "clean tasks to do" \
 		--selected-color "w" \
 		--focus 1 \
 		--color 'g b' \
@@ -261,13 +261,13 @@ clear_packages(){
 	set_offset 0
 
 	for task in $selection; do
-		clear_packages_$tasks[$task]
+		clean_packages_$tasks[$task]
 	done
 
 	set_offset 3
 }
 
-clear_packages_system(){
+clean_packages_system(){
 	alert_msg "Uninstalling" "system packages"
 	echo
 
@@ -285,7 +285,7 @@ clear_packages_system(){
 	fi
 }
 
-clear_packages_python(){
+clean_packages_python(){
 	alert_msg "Uninstalling" "python packages"
 	echo
 
@@ -294,7 +294,7 @@ clear_packages_python(){
 	echo "   ${g}DONE${n}"
 }
 
-clear_packages_font_forge(){
+clean_packages_font_forge(){
 	alert_msg "Uninstalling" "FontForge"
 	echo
 
@@ -303,7 +303,7 @@ clear_packages_font_forge(){
 	echo "   ${g}DONE${n}"
 }
 
-clear_packages_font_patcher(){
+clean_packages_font_patcher(){
 	alert_msg "Uninstalling" "FontPatcher"
 	echo
 
@@ -312,7 +312,7 @@ clear_packages_font_patcher(){
 	echo "   ${g}DONE${n}"
 }
 
-clear_packages_patched(){
+clean_packages_patched(){
 	alert_msg "Deleting" "patched fonts"
 	echo
 
@@ -324,7 +324,7 @@ clear_packages_patched(){
 	echo "   ${g}DONE${n}"
 }
 
-clear_packages_stored(){
+clean_packages_stored(){
 	alert_msg "Deleting" "backed up fonts"
 	echo
 
@@ -918,7 +918,7 @@ check_backuped_fonts(){
 # Parse arguments
 #
 parse_arguments(){
-	local commands=(setup patch install restore clear check)
+	local commands=(setup patch install restore clean check)
 	local cmd=(${(M)commands:#${1}*}) 
 
 	[[ $#cmd -eq 0 ]] && SCRIPT_COMMAND="exec_help"                         

@@ -6,8 +6,10 @@
 #
 !*/
 !lib/**
+!media/**
 
 # and this files
 #
 !.gitignore
+!.gitattributes
 !patch-fonts
