@@ -5,16 +5,20 @@ downloading and installing packages, python modules, programs and scripts
 necessary for font patching.
 
 ### Note: This script only works on **debian** and **debian derivatives**.
-
+<br>
+<br>
 
 # Prerequisites
 This is **zsh** script, thus **zsh** shell must be present on the system.
+<br>
+<br>
 
 
 # Installation
 Clone this repo. In repo there is script `patch-fonts` which does all the
 heavy lifting.
-
+<br>
+<br>
 
 # Usage
 If you run `./patch-fonts` script available commands will be shown:
@@ -45,7 +49,8 @@ By running above commands you can:
  - restore previously installed fonts 
 
 Below are shown examples of commands execution.
-
+<br>
+<br>
 
 ## setup
 
